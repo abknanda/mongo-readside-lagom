@@ -11,10 +11,12 @@ import scala.concurrent.Future
 class UserEventProcessor(mongoRepo: MongoRepo) extends ReadSideProcessor[UserEvent] {
 
   override def buildHandler(): ReadSideProcessor.ReadSideHandler[UserEvent] = {
-    new ReadSideHandler[UserEvent] {
+    new MongoDbReadSideProcessor[UserEvent] {
+
+      override var offsetId: String = "UserEventReadProcessor"
 
       override def globalPrepare(): Future[Done] =
-        mongoRepo.createTables()
+        mongoRepo.createTables(offsetId)
 
 
       override def prepare(tag: AggregateEventTag[UserEvent]): Future[Offset] =

@@ -9,11 +9,11 @@ import javax.inject.Inject
 import play.api.libs.json.{Json, OFormat}
 import play.modules.reactivemongo.{ReactiveMongoApi, ReactiveMongoComponents}
 import reactivemongo.api.commands.LastError
-import reactivemongo.bson.{BSONDocument, BSONDocumentReader, BSONDocumentWriter}
+import reactivemongo.bson.{BSONDocument, BSONDocumentReader, BSONDocumentWriter, BSONObjectID}
 
 import scala.concurrent.{ExecutionContext, Future}
 
-case class OffsetDocument(_id: UUID, value: Option[UUID])
+case class OffsetDocument(_id: String, value: Option[UUID])
 
 object OffsetDocument {
   implicit val format: OFormat[OffsetDocument] = Json.format[OffsetDocument]
@@ -21,7 +21,7 @@ object OffsetDocument {
   implicit val linkReader: BSONDocumentReader[OffsetDocument] =
     BSONDocumentReader[OffsetDocument] { doc: BSONDocument =>
       OffsetDocument(
-        UUID.fromString(doc.getAs[String]("_id").getOrElse("")),
+        doc.getAs[String]("_id").getOrElse(""),
         doc.getAs[String]("value").map { value =>
           UUID.fromString(value)
         })
@@ -31,11 +31,11 @@ object OffsetDocument {
     BSONDocumentWriter[OffsetDocument] { offset: OffsetDocument =>
       offset.value match {
         case Some(_) => BSONDocument(
-          "_id" -> offset._id.toString,
+          "_id" -> offset._id,
           "value" -> offset.value.get.toString)
 
         case None => BSONDocument(
-          "_id" -> offset._id.toString)
+          "_id" -> offset._id)
       }
 
     }
@@ -49,7 +49,7 @@ trait MongoRepo {
   /**
     * Create the tables needed for this read side if not already created.
     */
-  def createTables(): Future[Done]
+  def createTables(offsetTable: String): Future[Done]
 
   /**
     * Load the offset of the last event processed.
@@ -73,15 +73,18 @@ class MongoRepoImpl @Inject()(implicit ec: ExecutionContext, val reactiveMongoAp
 
   def offsetCollection: Future[JSONCollection] = reactiveMongoApi.database.map(_.collection("offset"))
 
+  var offsetTableName = BSONObjectID.generate().toString()
 
-  val aa = UUID.fromString("8a9cf030-7e5d-11e9-b475-0800200c9a66")
+  //val aa = UUID.fromString("8a9cf030-7e5d-11e9-b475-0800200c9a66")
 
-  val initDoc = OffsetDocument(aa, None)
 
-  def insertDefault = offsetCollection.flatMap(_.insert(initDoc)).recover { case err: LastError => Done }
+  def insertDefault(offsetDocument: OffsetDocument) = offsetCollection.flatMap(_.insert(offsetDocument))
+    .recover { case err: LastError => Done }
 
-  override def createTables(): Future[Done] = {
-    usersCollection.flatMap(_ => offsetCollection).flatMap(_ => insertDefault).map(_ => Done)
+  override def createTables(offsetTable: String): Future[Done] = {
+    offsetTableName = offsetTable
+    val initDoc = OffsetDocument(offsetTable, None)
+    usersCollection.flatMap(_ => offsetCollection).flatMap(_ => insertDefault(initDoc)).map(_ => Done)
   }
 
   /**
@@ -89,7 +92,7 @@ class MongoRepoImpl @Inject()(implicit ec: ExecutionContext, val reactiveMongoAp
     */
   override def loadOffset(tag: AggregateEventTag[UserEvent]): Future[Offset] = {
     offsetCollection.flatMap(_.find(
-      selector = BSONDocument("_id" -> aa.toString), projection = Option.empty[BSONDocument])
+      selector = BSONDocument("_id" -> offsetTableName), projection = Option.empty[BSONDocument])
       .one[OffsetDocument])
       .map {
         case Some(offsetDocument) => offsetDocument.value match {
@@ -110,7 +113,7 @@ class MongoRepoImpl @Inject()(implicit ec: ExecutionContext, val reactiveMongoAp
       case created: UserCreated => usersCollection.flatMap(_.insert(created)).
         flatMap {
           _ =>
-            offsetCollection.flatMap(_.update(BSONDocument("_id" -> aa.toString),
+            offsetCollection.flatMap(_.update(BSONDocument("_id" -> offsetTableName),
               BSONDocument("$set" -> BSONDocument("value" -> offset.asInstanceOf[TimeBasedUUID].value.toString))))
         }.map(_ => Done)
     }
