@@ -9,7 +9,7 @@ import javax.inject.Inject
 import play.api.libs.json.{Json, OFormat}
 import play.modules.reactivemongo.{ReactiveMongoApi, ReactiveMongoComponents}
 import reactivemongo.api.commands.LastError
-import reactivemongo.bson.{BSONDocument, BSONDocumentReader, BSONDocumentWriter, BSONObjectID}
+import reactivemongo.bson.{BSONDocument, BSONDocumentReader, BSONDocumentWriter}
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -43,13 +43,15 @@ object OffsetDocument {
 
 }
 
-trait MongoRepo {
+trait MongoReadHandler {
 
+
+  val offsetId: String
 
   /**
     * Create the tables needed for this read side if not already created.
     */
-  def createTables(offsetTable: String): Future[Done]
+  def createOffsetCollection: Future[Done]
 
   /**
     * Load the offset of the last event processed.
@@ -59,32 +61,30 @@ trait MongoRepo {
   /**
     * Handle the post added event.
     */
-  def handleEvent(event: UserEvent, offset: Offset): Future[Done]
+  def handleEvent(event: UserEvent, offset: Offset)(eventHandler: UserEvent => Future[Done]): Future[Done]
 }
 
 
-class MongoRepoImpl @Inject()(implicit ec: ExecutionContext, val reactiveMongoApi: ReactiveMongoApi) extends MongoRepo with ReactiveMongoComponents {
+class MongoReadHandlerImpl @Inject()(val offsetId: String)(implicit ec: ExecutionContext, val reactiveMongoApi: ReactiveMongoApi) extends MongoReadHandler with ReactiveMongoComponents {
 
   import reactivemongo.play.json._
   import collection.{JSONCollection, _}
 
 
-  def usersCollection: Future[JSONCollection] = reactiveMongoApi.database.map(_.collection("users"))
+  val offsetCollectionName: String = "offset";
 
-  def offsetCollection: Future[JSONCollection] = reactiveMongoApi.database.map(_.collection("offset"))
-
-  var offsetTableName = BSONObjectID.generate().toString()
-
-  //val aa = UUID.fromString("8a9cf030-7e5d-11e9-b475-0800200c9a66")
+  def offsetCollection: Future[JSONCollection] = reactiveMongoApi.database.map(_.collection(offsetCollectionName))
 
 
   def insertDefault(offsetDocument: OffsetDocument) = offsetCollection.flatMap(_.insert(offsetDocument))
-    .recover { case err: LastError => Done }
+    .recover { case err: LastError =>
+      if (err.getMessage().contains("duplicate key error collection")) Done
+      else throw err
+    } //Inserting Duplicate Handling
 
-  override def createTables(offsetTable: String): Future[Done] = {
-    offsetTableName = offsetTable
-    val initDoc = OffsetDocument(offsetTable, None)
-    usersCollection.flatMap(_ => offsetCollection).flatMap(_ => insertDefault(initDoc)).map(_ => Done)
+  override def createOffsetCollection: Future[Done] = {
+    val initDoc = OffsetDocument(offsetId, None)
+    offsetCollection.flatMap(_ => insertDefault(initDoc)).map(_ => Done)
   }
 
   /**
@@ -92,7 +92,7 @@ class MongoRepoImpl @Inject()(implicit ec: ExecutionContext, val reactiveMongoAp
     */
   override def loadOffset(tag: AggregateEventTag[UserEvent]): Future[Offset] = {
     offsetCollection.flatMap(_.find(
-      selector = BSONDocument("_id" -> offsetTableName), projection = Option.empty[BSONDocument])
+      selector = BSONDocument("_id" -> offsetId), projection = Option.empty[BSONDocument])
       .one[OffsetDocument])
       .map {
         case Some(offsetDocument) => offsetDocument.value match {
@@ -107,18 +107,12 @@ class MongoRepoImpl @Inject()(implicit ec: ExecutionContext, val reactiveMongoAp
   /**
     * Handle the post added event.
     */
-  override def handleEvent(event: UserEvent, offset: Offset): Future[Done] = {
-    println(event)
-    event match {
-      case created: UserCreated => usersCollection.flatMap(_.insert(created)).
-        flatMap {
-          _ =>
-            offsetCollection.flatMap(_.update(BSONDocument("_id" -> offsetTableName),
-              BSONDocument("$set" -> BSONDocument("value" -> offset.asInstanceOf[TimeBasedUUID].value.toString))))
-        }.map(_ => Done)
-    }
-
+  override def handleEvent(event: UserEvent, offset: Offset)(eventHandler: UserEvent => Future[Done]): Future[Done] = {
+    eventHandler(event)
+      .flatMap {
+      _ =>
+        offsetCollection.flatMap(_.update(BSONDocument("_id" -> offsetId),
+          BSONDocument("$set" -> BSONDocument("value" -> offset.asInstanceOf[TimeBasedUUID].value.toString))))
+    }.map(_ => Done)
   }
 }
-
-

@@ -29,7 +29,6 @@ abstract class UserApplication(context: LagomApplicationContext)
     configuration = configuration,
     applicationLifecycle = applicationLifecycle
   )
-  val mongoRepo = wire[MongoRepoImpl]
   readSide.register(wire[UserEventProcessor])
 
 }
