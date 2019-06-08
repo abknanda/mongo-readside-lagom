@@ -9,12 +9,16 @@ import reactivemongo.api.commands.LastError
 
 import scala.concurrent.{ExecutionContext, Future}
 
-class UserEventProcessor(implicit ec: ExecutionContext, reactiveMongoApi: ReactiveMongoApi) extends ReadSideProcessor[UserEvent] {
+class UserEventProcessor(implicit ec: ExecutionContext, reactiveMongoApi: ReactiveMongoApi) extends ReadSideProcessor[UserEvent]{
 
   override def buildHandler(): ReadSideProcessor.ReadSideHandler[UserEvent] = {
     new MongoDbReadSideProcessor[UserEvent] {
 
-      override val mongoRepo: MongoReadHandler = new MongoReadHandlerImpl("users-offset")
+      override val mongoRepo: MongoReadHandler[UserEvent] = new MongoReadHandler[UserEvent]{
+
+        override def offsetId: String = "users-offset"
+        override def reactiveMongo: ReactiveMongoApi = reactiveMongoApi
+      }
 
       override def globalPrepare(): Future[Done] =
         mongoRepo.createOffsetCollection
@@ -35,7 +39,6 @@ class UserEventProcessor(implicit ec: ExecutionContext, reactiveMongoApi: Reacti
 
         userEvent match {
           case userCreated: UserCreated =>
-            println(userEvent)
             val usersCollection: Future[JSONCollection] = reactiveMongoApi.database.map(_.collection("users"))
             usersCollection.flatMap(_.insert(userCreated))
               .recover { case err: LastError =>
@@ -54,3 +57,4 @@ class UserEventProcessor(implicit ec: ExecutionContext, reactiveMongoApi: Reacti
   override def aggregateTags: Set[AggregateEventTag[UserEvent]] = UserEvent.UserEventTag.allTags
 
 }
+
