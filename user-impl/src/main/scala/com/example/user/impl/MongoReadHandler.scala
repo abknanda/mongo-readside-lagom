@@ -4,7 +4,7 @@ import akka.Done
 import akka.persistence.query.{NoOffset, Offset, TimeBasedUUID}
 import com.lightbend.lagom.scaladsl.persistence.{AggregateEvent, AggregateEventTag}
 import play.modules.reactivemongo.ReactiveMongoApi
-import reactivemongo.api.commands.LastError
+import reactivemongo.api.commands.{LastError, WriteResult}
 import reactivemongo.bson.BSONDocument
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -22,10 +22,7 @@ trait MongoReadHandler[Event <: AggregateEvent[Event]] {
   private val offsetCollectionName: String = "offsetstore";
 
   private def insertDefault(offsetDocument: OffsetDocument)(implicit ec: ExecutionContext) = offsetCollection.flatMap(_.insert(offsetDocument))
-    .recover { case err: LastError =>
-      if (err.getMessage().contains("duplicate key error collection")) Done
-      else throw err
-    } //Inserting Duplicate Handling
+    .recover { case WriteResult.Code(11000) => Done } //Inserting Duplicate Handling
 
   def offsetCollection(implicit ec: ExecutionContext): Future[JSONCollection] = reactiveMongo.database.map(_.collection(offsetCollectionName))
 
@@ -64,4 +61,3 @@ trait MongoReadHandler[Event <: AggregateEvent[Event]] {
             BSONDocument("$set" -> BSONDocument("value" -> offset.asInstanceOf[TimeBasedUUID].value.toString))))
       }.map(_ => Done)
 }
-

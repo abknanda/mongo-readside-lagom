@@ -5,7 +5,7 @@ import akka.stream.scaladsl.Flow
 import akka.{Done, NotUsed}
 import com.lightbend.lagom.scaladsl.persistence.{AggregateEventTag, EventStreamElement, ReadSideProcessor}
 import play.modules.reactivemongo.ReactiveMongoApi
-import reactivemongo.api.commands.LastError
+import reactivemongo.api.commands.{LastError, WriteResult}
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -41,10 +41,7 @@ class UserEventProcessor(implicit ec: ExecutionContext, reactiveMongoApi: Reacti
           case userCreated: UserCreated =>
             val usersCollection: Future[JSONCollection] = reactiveMongoApi.database.map(_.collection("users"))
             usersCollection.flatMap(_.insert(userCreated))
-              .recover { case err: LastError =>
-                if (err.getMessage().contains("duplicate key error collection")) Done
-                else throw err
-              } //Inserting Duplicate Handling
+              .recover { case WriteResult.Code(11000) => Done } //Inserting Duplicate Handling
               .map(_ => Done)
             //TODO - Create upsert statement
         }
